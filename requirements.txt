@@ -1,0 +1,11 @@
+Flask
+Flask_Cors
+langchain
+langchain_community
+langchain_core
+langchain_openai
+langchain_text_splitters
+langgraph
+python-dotenv
+typing_extensions
+pypdf
