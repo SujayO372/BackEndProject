@@ -130,7 +130,7 @@ fallback_message = (
     "Please try asking something else, or consult additional resources."
 )
 
-# Your flask application - write the code for this and paste code from doc
+# Your flask application - write the code for this, reference the doc
 
 # Endpoint 1: query
 @application.route('/query', methods=['OPTIONS', 'POST'])
