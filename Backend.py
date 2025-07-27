@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from flask_cors import CORS
 from typing_extensions import List, TypedDict
 
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from langchain_core.documents import Document
@@ -34,14 +34,15 @@ embeddings = OpenAIEmbeddings(
     model="text-embedding-3-large",
     openai_api_key=os.environ["OPENAI_API_KEY"]
 )
+
 vector_store = InMemoryVectorStore(embeddings)
 
 def load_documents():
-    pdf_files = glob.glob("documents/*.pdf")
+    text_files = glob.glob("documents/*.txt")
     docs = []
 
-    for pdf_path in pdf_files:
-        loader = PyPDFLoader(pdf_path)
+    for text_path in text_files:
+        loader = TextLoader(text_path)
         chunk = loader.load()
         docs.extend(chunk)
 
@@ -92,10 +93,10 @@ graph_builder = StateGraph(State).add_sequence([retrieve, generate])
 graph_builder.add_edge(START, "retrieve")
 graph = graph_builder.compile()
 
-fallback_message = (
-    "I apologize, but I don't have enough information in my knowledge base to answer that question accurately. "
-    "Please try asking something else, or consult additional resources."
-)
+# fallback_message = (
+#     "I apologize, but I don't have enough information in my knowledge base to answer that question accurately. "
+#     "Please try asking something else, or consult additional resources."
+# )
 
 # ✅ Replace this with your actual frontend URL
 frontend_url = 'http://localhost:3000'
@@ -135,7 +136,7 @@ def refresh_data():
     try:
         vector_store.clear()
         # TODO: Load new data from Amazon S3
-        return jsonify({"status": "success", "message": "PDFs reloaded"}), 200
+        return jsonify({"status": "success", "message": "Text files reloaded"}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
