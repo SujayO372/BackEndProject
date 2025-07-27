@@ -41,6 +41,7 @@ embeddings = OpenAIEmbeddings(
     model="text-embedding-3-large",
     openai_api_key=os.environ["OPENAI_API_KEY"]
 )
+
 vector_store = InMemoryVectorStore(embeddings)
 
 def load_documents():
@@ -64,6 +65,7 @@ def load_documents():
 
     for pdf_path in pdf_files:
         # YOUR CODE HERE (replace 'pass' with your code) - Intended answer is 3 lines of code
+        # pdf_files -> docs
         pass
 
     # This splits your documents into chunks of text
@@ -125,10 +127,10 @@ graph_builder = StateGraph(State).add_sequence([retrieve, generate])
 graph_builder.add_edge(START, "retrieve")
 graph = graph_builder.compile()
 
-fallback_message = (
-    "I apologize, but I don't have enough information in my knowledge base to answer that question accurately. "
-    "Please try asking something else, or consult additional resources."
-)
+# fallback_message = (
+#     "I apologize, but I don't have enough information in my knowledge base to answer that question accurately. "
+#     "Please try asking something else, or consult additional resources."
+# )
 
 # Your flask application - write the code for this, reference the doc
 
@@ -177,4 +179,3 @@ def refresh_data():
 # Run the application
 if __name__ == '__main__':
     application.run(debug=True)
-
