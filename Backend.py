@@ -1,11 +1,14 @@
 import glob, os
+import logging
+from datetime import datetime
 
 from flask import Flask, request, jsonify, make_response
 from dotenv import load_dotenv
 from flask_cors import CORS
 from typing_extensions import List, TypedDict
 
-from langchain_community.document_loaders import TextLoader
+#  use TextLoader instead of PyPDFLoader
+from langchain_community.document_loaders import TextLoader  
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from langchain_core.documents import Document
@@ -13,36 +16,35 @@ from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.graph import START, StateGraph
 
-# Load environment variables
+# Load .env variables
 load_dotenv(dotenv_path='.env')
-
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 if not os.environ.get("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY is not set")
 
-# Flask application
 application = Flask(__name__)
-CORS(application)  # ✅ Enable CORS
+CORS(application)  # CORS enabled for frontend
 
 # Initialize OpenAI LLM
 llm = ChatOpenAI(
-    model="gpt-4",  # or "gpt-3.5-turbo"
+    model="gpt-4",
     openai_api_key=os.environ["OPENAI_API_KEY"]
 )
 
-# Vector store setup
+# Initialize embedding model and vector store
 embeddings = OpenAIEmbeddings(
     model="text-embedding-3-large",
     openai_api_key=os.environ["OPENAI_API_KEY"]
 )
-
 vector_store = InMemoryVectorStore(embeddings)
 
+# ✅ CHANGED: load text files instead of PDFs
 def load_documents():
-    text_files = glob.glob("documents/*.txt")
+    text_files = glob.glob("documents/*.txt")  # Changed from .pdf to .txt
     docs = []
 
     for text_path in text_files:
-        loader = TextLoader(text_path)
+        loader = TextLoader(text_path)  # Switched to TextLoader
         chunk = loader.load()
         docs.extend(chunk)
 
@@ -55,7 +57,7 @@ def load_documents():
 
 load_documents()
 
-# Prompt for chatbot
+# Chat prompt template
 prompt_template = """
 You are a helpful mental health assistant chatbot. Use the following context to answer the user's question.
 
@@ -74,10 +76,6 @@ class State(TypedDict):
 
 def retrieve(state: State):
     retrieved_docs = vector_store.similarity_search(state["question"])
-    for i in range(len(retrieved_docs)):
-        print("doc", i)
-        print(retrieved_docs[i])
-        print()
     return {"context": retrieved_docs}
 
 def generate(state: State):
@@ -93,15 +91,36 @@ graph_builder = StateGraph(State).add_sequence([retrieve, generate])
 graph_builder.add_edge(START, "retrieve")
 graph = graph_builder.compile()
 
-# fallback_message = (
-#     "I apologize, but I don't have enough information in my knowledge base to answer that question accurately. "
-#     "Please try asking something else, or consult additional resources."
-# )
+frontend_url = 'http://localhost:5173'  # CHANGED: updated frontend port
 
-# ✅ Replace this with your actual frontend URL
-frontend_url = 'http://localhost:3000'
+# Safety functions
+def validate_and_sanitize_input(query):
+    if len(query) > 1000:
+        return None, "Message too long."
+    
+    return query.strip(), None
 
-# Endpoint 1: /query
+CRISIS_KEYWORDS = [
+    'suicide', 'kill myself', 'end it all', 'harm myself', 'hurt myself',
+    'want to die', 'worthless', 'hopeless', 'cutting', 'overdose'
+]
+
+def detect_crisis(query):
+    if any(keyword in query.lower() for keyword in CRISIS_KEYWORDS):
+        return True
+    return False
+
+CRISIS_RESPONSE = """ As an AI Chatbot, I hold concern for you. Please reach out for help:
+- Take a look at the Hotlines page, and dial any numbers.
+- Call 988 (Suicide & Crisis Lifeline)
+- Text "HELLO" to 741741 (Crisis Text Line)
+- Call 911 for emergencies"""
+
+def add_disclaimer(response):
+    disclaimer = "\n\n**Disclaimer:** I am not a licensed therapist. Please consult a professional for serious concerns."
+    return response + disclaimer 
+
+# Endpoint: /query
 @application.route('/query', methods=['OPTIONS', 'POST'])
 def query():
     if request.method == 'OPTIONS':
@@ -116,8 +135,16 @@ def query():
     if not user_query:
         return jsonify({"error": "Query parameter is required"}), 400
 
-    final_state = graph.invoke({"question": user_query})
-    answer = final_state["answer"].strip()
+    sanitized_query, error = validate_and_sanitize_input(user_query)
+    if error:
+        return jsonify({"error": error}), 400
+    
+    if detect_crisis(sanitized_query):
+        logging.warning(f"Crisis detected: {sanitized_query[:50]}...")
+        return jsonify({"response": {"query": user_query, "result": CRISIS_RESPONSE}})
+
+    final_state = graph.invoke({"question": sanitized_query})
+    answer = add_disclaimer(final_state["answer"].strip())
 
     response = jsonify({
         "response": {
@@ -130,17 +157,17 @@ def query():
     response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
     return response
 
-# Endpoint 2: /refresh
+# Endpoint: /refresh
 @application.route('/refresh', methods=['POST'])
 def refresh_data():
     try:
         vector_store.clear()
-        # TODO: Load new data from Amazon S3
+        load_documents()  # Added this to actually reload the documents
         return jsonify({"status": "success", "message": "Text files reloaded"}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# ✅ New Endpoint 3: /gemini-query
+# Endpoint: /gemini-query (with safety features added)
 @application.route('/gemini-query', methods=['OPTIONS', 'POST'])
 def gemini_query():
     if request.method == 'OPTIONS':
@@ -150,35 +177,40 @@ def gemini_query():
         response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
         return response, 204
 
-    from google import genai
-    from google.genai import types
+    from google import generativeai
+    from google.generativeai import types
 
     data = request.json
     user_query = data.get("query")
     if not user_query:
         return jsonify({"error": "Query parameter is required"}), 400
 
-    try:
-        client = genai.Client()
+    # Add safety features to Gemini endpoint too
+    sanitized_query, error = validate_and_sanitize_input(user_query)
+    if error:
+        return jsonify({"error": error}), 400
+    
+    if detect_crisis(sanitized_query):
+        logging.warning(f"Crisis detected in Gemini: {sanitized_query[:50]}...")
+        return jsonify({"response": {"query": user_query, "result": CRISIS_RESPONSE, "sources": []}})
 
+    try:
+        client = generativeai.Client()
         grounding_tool = types.Tool(
             google_search=types.GoogleSearch()
         )
-
         config = types.GenerateContentConfig(
             tools=[grounding_tool]
         )
-
         gemini_response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=user_query,
+            contents=sanitized_query,
             config=config,
         )
-
         candidate = gemini_response.candidates[0]
-        answer_text = candidate.content.parts[0].text
+        answer_text = add_disclaimer(candidate.content.parts[0].text)
 
-        # Extract grounded web sources
+        # Extract grounded sources
         sources = []
         chunks = candidate.groundingMetadata.groundingChunks
         for chunk in chunks:
@@ -204,6 +236,11 @@ def gemini_query():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Run the app
+# Health check endpoint
+@application.route('/health')
+def health_check():
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
+
+# Run Flask app
 if __name__ == '__main__':
     application.run(debug=True)
