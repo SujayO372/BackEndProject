@@ -15,6 +15,8 @@ from langchain_core.documents import Document
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.graph import START, StateGraph
+from supabase import create_client, Client
+
 
 # Load .env variables
 load_dotenv(dotenv_path='.env')
@@ -30,6 +32,15 @@ llm = ChatOpenAI(
     model="gpt-4",
     openai_api_key=os.environ["OPENAI_API_KEY"]
 )
+
+# Initialize Supabase
+supabase_url = os.environ.get("SUPABASE_URL")
+supabase_key = os.environ.get("SUPABASE_KEY")
+if not supabase_url or not supabase_key:
+    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
+supabase: Client = create_client(supabase_url, supabase_key)
+
+
 
 # Initialize embedding model and vector store
 embeddings = OpenAIEmbeddings(
@@ -60,7 +71,6 @@ load_documents()
 # Chat prompt template
 prompt_template = """
 You are a helpful mental health assistant chatbot. Use the following context to answer the user's question.
-
 Context:
 {context}
 
@@ -115,6 +125,11 @@ CRISIS_RESPONSE = """ As an AI Chatbot, I hold concern for you. Please reach out
 - Call 988 (Suicide & Crisis Lifeline)
 - Text "HELLO" to 741741 (Crisis Text Line)
 - Call 911 for emergencies"""
+
+
+NOTENOUGH_INFORMATION = """
+As a Mental Health subjected Chatbot, I am unable to answer this question, as I do not have any context related to it.
+"""
 
 def add_disclaimer(response):
     disclaimer = "\n\n**Disclaimer:** I am not a licensed therapist. Please consult a professional for serious concerns."
@@ -242,5 +257,19 @@ def health_check():
     return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
 
 # Run Flask app
+
+
+
+# Test Supabase connection
+@application.route('/test-db', methods=['GET'])
+def test_database():
+    try:
+        # Simple test query
+        result = supabase.table('_realtime_schema').select('*').limit(1).execute()
+        return jsonify({"status": "success", "message": "Database connected successfully!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Database connection failed: {str(e)}"}), 500
+    
+
 if __name__ == '__main__':
     application.run(debug=True)
