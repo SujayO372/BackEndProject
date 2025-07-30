@@ -17,6 +17,17 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.graph import START, StateGraph
 from supabase import create_client, Client
 
+import pinecone
+
+pinecone.init(api_key="YOUR_API_KEY", environment="YOUR_ENV")
+index_name = "pdf-knowledge-db"
+
+# Create index if not exists
+if index_name not in pinecone.list_indexes():
+    pinecone.create_index(index_name, dimension=1536)  # dimension depends on embedding model
+
+index = pinecone.Index(index_name)
+
 
 # Load .env variables
 load_dotenv(dotenv_path='.env')
