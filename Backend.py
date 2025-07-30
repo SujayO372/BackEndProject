@@ -16,17 +16,13 @@ from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.graph import START, StateGraph
 from supabase import create_client, Client
-
 import pinecone
+from pinecone import Pinecone, ServerlessSpec
 
-pinecone.init(api_key="YOUR_API_KEY", environment="YOUR_ENV")
-index_name = "pdf-knowledge-db"
+pc = Pinecone(api_key="pcsk_48c5wR_TFnVfytQPnUhA678YiYgHtNruaUYwniPn8GxcvGdLaKkRt2xp24ou7HHac39nBy")
 
-# Create index if not exists
-if index_name not in pinecone.list_indexes():
-    pinecone.create_index(index_name, dimension=1536)  # dimension depends on embedding model
 
-index = pinecone.Index(index_name)
+
 
 
 # Load .env variables
