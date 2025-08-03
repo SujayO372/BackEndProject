@@ -349,6 +349,30 @@ User Answers:
         logging.exception("Gemini health test error:")
         return jsonify({"error": str(e)}), 500
 
+def process_file(file):
+    text = file.read().decode("utf-8")
+    chunks = split_text(text)
+
+    vectors = []
+    for i, chunk in enumerate(chunks):
+        vector_id = f"{file.name}_{i}_{uuid4().hex[:8]}"
+        embedding = get_embedding(chunk)
+        vectors.append({
+            "id": vector_id,
+            "values": embedding,
+            "metadata": {"text": chunk, "source": file.name}
+        })
+
+    index.upsert(vectors=vectors)
+    return len(vectors)
+
+
+
+
+
+
+
 
 if __name__ == '__main__':
     application.run(debug=True)
+
