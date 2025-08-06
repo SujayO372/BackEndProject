@@ -10,3 +10,5 @@ python-dotenv
 typing_extensions
 supabase
 google-generativeai
+pdfplumber
+markdownify

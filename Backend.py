@@ -3,7 +3,7 @@ import os
 import logging
 import json
 from datetime import datetime
-
+from pinecone import Pinecone  
 from flask import Flask, request, jsonify, make_response
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -20,6 +20,9 @@ from langgraph.graph import START, StateGraph
 from supabase import create_client, Client
 
 import google.generativeai as genai
+import pdfplumber 
+from markdownify import markdownify as md
+from pinecone_plugins.assistant.models.chat import Message
 
 # Load .env variables
 load_dotenv(dotenv_path='.env')
@@ -30,6 +33,9 @@ if not os.environ.get("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY is not set")
 if not os.environ.get("GEMINI_API_KEY"):
     raise ValueError("GEMINI_API_KEY must be set")
+
+if not os.environ.get("PINECONE_API_KEY"):
+    raise ValueError("PINECONE_API_KEY is not set")
 
 # Configure Gemini client
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
@@ -178,8 +184,19 @@ def query():
         logging.warning(f"Crisis detected: {sanitized_query[:50]}...")
         return jsonify({"response": {"query": user_query, "result": CRISIS_RESPONSE}})
 
-    final_state = graph.invoke({"question": sanitized_query})
-    answer = add_disclaimer(final_state["answer"].strip())
+
+    PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
+    pc = Pinecone(api_key=os.get(PINECONE_API_KEY))
+    assistant = pc.assistant.Assistant(assistant_name="pineconeai")
+    msg = Message(role="user", content=sanitized_query)
+    resp = assistant.chat(messages=[msg])
+    response = jsonify({
+        "response": {
+            "query": sanitized_query,
+            "result": resp
+        }
+    })
+    return response
 
     response = jsonify({
         "response": {
@@ -251,6 +268,21 @@ def gemini_query():
 def health_check():
     return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
 
+@application.route('/pinecone', methods=['OPTIONS', 'POST'])
+def pinecone():
+    dummy_message = "hi"
+    PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
+    pc = Pinecone(api_key=os.get(PINECONE_API_KEY))
+    assistant = pc.assistant.Assistant(assistant_name="example-assistant")
+    msg = Message(role="user", content=dummy_message)
+    resp = assistant.chat(messages=[msg])
+    response = jsonify({
+        "response": {
+            "query": dummy_message,
+            "result": resp
+        }
+    })
+    return response
 # Test Supabase
 @application.route('/test-db', methods=['GET'])
 def test_database():
@@ -349,6 +381,8 @@ User Answers:
         logging.exception("Gemini health test error:")
         return jsonify({"error": str(e)}), 500
 
+# pinecone 
+
 def process_file(file):
     text = file.read().decode("utf-8")
     chunks = split_text(text)
@@ -367,7 +401,43 @@ def process_file(file):
     return len(vectors)
 
 
+def convert_pdf_to_markdown(pdf_path, output_dir):
+    filename = os.path.splitext(os.path.basename(pdf_path))[0]
+    md_path = os.path.join(output_dir, f"{filename}.md")
 
+    with pdfplumber.open(pdf_path) as pdf:
+        full_text = ""
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                full_text += text + "\n\n"
+
+    markdown_text = md(full_text)
+
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(markdown_text) 
+    process_file(f)
+    print(f"Converted: {pdf_path} → {md_path}")
+
+def batch_convert_pdfs(input_dir, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    for file in os.listdir(input_dir):
+        if file.lower().endswith(".pdf"):
+            pdf_path = os.path.join(input_dir, file)
+            convert_pdf_to_markdown(pdf_path, output_dir)
+
+# === Set your paths here ===
+
+batch_convert_pdfs()
+
+
+input_directory = "/path/to/pdf/folder"
+output_directory = "/path/to/markdown/output"
+
+batch_convert_pdfs(input_directory, output_directory)
+
+# To use the Python SDK, install the plugin:
+# pip install --upgrade pinecone pinecone-plugin-assistant
 
 
 
