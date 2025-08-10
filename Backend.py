@@ -3,11 +3,12 @@ import os
 import logging
 import json
 from datetime import datetime
-from pinecone import Pinecone  
+from pinecone import Pinecone
 from flask import Flask, request, jsonify, make_response
 from dotenv import load_dotenv
 from flask_cors import CORS
 from typing_extensions import List, TypedDict
+import re
 
 # use TextLoader instead of PyPDFLoader
 from langchain_community.document_loaders import TextLoader
@@ -20,8 +21,6 @@ from langgraph.graph import START, StateGraph
 from supabase import create_client, Client
 
 import google.generativeai as genai
-import pdfplumber 
-from markdownify import markdownify as md
 from pinecone_plugins.assistant.models.chat import Message
 
 # Load .env variables
@@ -33,7 +32,6 @@ if not os.environ.get("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY is not set")
 if not os.environ.get("GEMINI_API_KEY"):
     raise ValueError("GEMINI_API_KEY must be set")
-
 if not os.environ.get("PINECONE_API_KEY"):
     raise ValueError("PINECONE_API_KEY is not set")
 
@@ -66,22 +64,15 @@ vector_store = InMemoryVectorStore(embeddings)
 
 def call_gemini_api(prompt_text: str) -> str:
     try:
-        # Create a Gemini model instance, e.g. gemini-1.5-flash
         model = genai.GenerativeModel("gemini-1.5-flash")
-        
-        # Generate content by passing the prompt
         response = model.generate_content(prompt_text)
-        
-        # Return the generated text
         return response.text.strip()
-
     except Exception as e:
-        print(f"Error calling Gemini API: {e}")
+        logging.error(f"Error calling Gemini API: {e}")
         return ""
-    
+
 
 # Load documents
-
 def load_documents():
     text_files = glob.glob("documents/*.txt")
     docs = []
@@ -96,6 +87,7 @@ def load_documents():
     all_splits = text_splitter.split_documents(docs)
     vector_store.add_documents(all_splits)
 
+
 load_documents()
 
 # Prompt template
@@ -109,14 +101,17 @@ Question: {question}
 Answer:
 """.strip()
 
+
 class State(TypedDict):
     question: str
     context: List[Document]
     answer: str
 
+
 def retrieve(state: State):
     retrieved_docs = vector_store.similarity_search(state["question"])
     return {"context": retrieved_docs}
+
 
 def generate(state: State):
     docs_content = "\n\n".join(doc.page_content for doc in state["context"])
@@ -126,6 +121,7 @@ def generate(state: State):
     )
     response = llm.invoke([{"role": "user", "content": final_prompt}])
     return {"answer": response.content}
+
 
 graph_builder = StateGraph(State).add_sequence([retrieve, generate])
 graph_builder.add_edge(START, "retrieve")
@@ -139,13 +135,16 @@ def validate_and_sanitize_input(query):
         return None, "Message too long."
     return query.strip(), None
 
+
 CRISIS_KEYWORDS = [
     'suicide', 'kill myself', 'end it all', 'harm myself', 'hurt myself',
     'want to die', 'worthless', 'hopeless', 'cutting', 'overdose'
 ]
 
+
 def detect_crisis(query):
     return any(keyword in query.lower() for keyword in CRISIS_KEYWORDS)
+
 
 CRISIS_RESPONSE = """ As an AI Chatbot, I hold concern for you. Please reach out for help:
 - Take a look at the Hotlines page, and dial any numbers.
@@ -153,136 +152,83 @@ CRISIS_RESPONSE = """ As an AI Chatbot, I hold concern for you. Please reach out
 - Text "HELLO" to 741741 (Crisis Text Line)
 - Call 911 for emergencies"""
 
+
 NOTENOUGH_INFORMATION = """
 As a Mental Health subjected Chatbot, I am unable to answer this question, as I do not have any context related to it.
 """
+
 
 def add_disclaimer(response):
     disclaimer = "\n\n**Disclaimer:** I am not a licensed therapist. Please consult a professional for serious concerns."
     return response + disclaimer
 
+
+def cors_response(json_data, status=200):
+    response = jsonify(json_data)
+    response.headers['Access-Control-Allow-Origin'] = frontend_url
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+    return response, status
+
+
 # Endpoint: /query
 @application.route('/query', methods=['OPTIONS', 'POST'])
 def query():
     if request.method == 'OPTIONS':
-        response = make_response()
-        response.headers['Access-Control-Allow-Origin'] = frontend_url
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        return response, 204
+        return cors_response({}, 204)
 
     data = request.json
     user_query = data.get("query")
     if not user_query:
-        return jsonify({"error": "Query parameter is required"}), 400
+        return cors_response({"error": "Query parameter is required"}, 400)
 
     sanitized_query, error = validate_and_sanitize_input(user_query)
     if error:
-        return jsonify({"error": error}), 400
+        return cors_response({"error": error}, 400)
 
     if detect_crisis(sanitized_query):
         logging.warning(f"Crisis detected: {sanitized_query[:50]}...")
-        return jsonify({"response": {"query": user_query, "result": CRISIS_RESPONSE}})
-
+        return cors_response({"response": {"query": user_query, "result": CRISIS_RESPONSE}})
 
     PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
-    pc = Pinecone(api_key=os.get(PINECONE_API_KEY))
+    pc = Pinecone(api_key=PINECONE_API_KEY)
     assistant = pc.assistant.Assistant(assistant_name="pineconeai")
     msg = Message(role="user", content=sanitized_query)
     resp = assistant.chat(messages=[msg])
-    response = jsonify({
+    return cors_response({
         "response": {
             "query": sanitized_query,
             "result": resp
         }
     })
-    return response
 
-    response = jsonify({
-        "response": {
-            "query": user_query,
-            "result": answer
-        }
-    })
-    response.headers['Access-Control-Allow-Origin'] = frontend_url
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-    return response
-
-# Endpoint: /gemini-query
-@application.route('/gemini-query', methods=['OPTIONS', 'POST'])
-def gemini_query():
-    if request.method == 'OPTIONS':
-        response = make_response()
-        response.headers['Access-Control-Allow-Origin'] = frontend_url
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        return response, 204
-
-    data = request.json
-    user_query = data.get("query")
-    if not user_query:
-        return jsonify({"error": "Query parameter is required"}), 400
-
-    sanitized_query, error = validate_and_sanitize_input(user_query)
-    if error:
-        return jsonify({"error": error}), 400
-
-    if detect_crisis(sanitized_query):
-        logging.warning(f"Crisis detected in Gemini: {sanitized_query[:50]}...")
-        return jsonify({
-            "response": {
-                "query": user_query,
-                "result": CRISIS_RESPONSE,
-                "sources": []
-            }
-        })
-
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(sanitized_query)
-
-        answer_text = response.text.strip()
-        answer_text = add_disclaimer(answer_text)
-
-        response_data = {
-            "response": {
-                "query": user_query,
-                "result": answer_text,
-                "sources": []
-            }
-        }
-
-        response = jsonify(response_data)
-        response.headers['Access-Control-Allow-Origin'] = frontend_url
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        return response
-
-    except Exception as e:
-        logging.exception("Gemini API error:")
-        return jsonify({"error": str(e)}), 500
 
 # Health check
 @application.route('/health')
 def health_check():
     return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
 
+
+# Endpoint: /pinecone
 @application.route('/pinecone', methods=['OPTIONS', 'POST'])
 def pinecone():
+    if request.method == 'OPTIONS':
+        return cors_response({}, 204)
+
     dummy_message = "hi"
     PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
-    pc = Pinecone(api_key=os.get(PINECONE_API_KEY))
+    pc = Pinecone(api_key=PINECONE_API_KEY)
     assistant = pc.assistant.Assistant(assistant_name="example-assistant")
     msg = Message(role="user", content=dummy_message)
     resp = assistant.chat(messages=[msg])
-    response = jsonify({
+    return cors_response({
         "response": {
             "query": dummy_message,
             "result": resp
         }
     })
-    return response
+
+
 # Test Supabase
 @application.route('/test-db', methods=['GET'])
 def test_database():
@@ -292,157 +238,180 @@ def test_database():
     except Exception as e:
         return jsonify({"status": "error", "message": f"Database connection failed: {str(e)}"}), 500
 
+
 # Updated /health-test endpoint
 @application.route('/health-test', methods=['OPTIONS', 'POST'])
 def health_test():
     if request.method == 'OPTIONS':
-        response = make_response()
-        response.headers['Access-Control-Allow-Origin'] = frontend_url
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        return response, 204
+        return cors_response({}, 204)
 
-    print("--------- inside healthtest...")
-    load_dotenv(dotenv_path='.env')  # Optional: specify path explicitly
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not set")
-
-    if api_key:
-        print("GEMINI_API_KEY loaded.", api_key)
-    else:
-        print("GEMINI_API_KEY missing.")
-
-    import google.generativeai as genai
-
-    # Configure the gemini client with your key
-    genai.configure(api_key=api_key)
-    
     data = request.get_json()
-    if not data:
-        return jsonify({"error": "Missing JSON body"}), 400
+    if not data or not isinstance(data.get("answers"), dict):
+        return cors_response({"error": "Missing or invalid 'answers' field"}, 400)
 
-    answers = data.get("answers")
-    if not answers or not isinstance(answers, dict):
-        return jsonify({"error": "Missing or invalid 'answers' field"}), 400
-
-    # Combine all text for crisis check
+    answers = data["answers"]
     combined_text = " ".join(str(v) for v in answers.values())
     if detect_crisis(combined_text):
-        return jsonify({
+        return cors_response({
             "response": {
                 "result": CRISIS_RESPONSE,
                 "recommendations": []
             }
         })
 
-    # Build Gemini prompt
-    prompt = f"""
-You are a helpful mental health assistant.
-Based on these user answers to a health checkup, suggest 3 relevant mental health articles.
-
-Return the result in this JSON format:
-[
-  {{
-    "title": "Article Title",
-    "summary": "Brief summary",
-    "link": "https://example.com/article"
-  }}
-]
-
-User Answers:
-{json.dumps(answers, indent=2)}
-"""
+    prompt = (
+        "You are a helpful mental health assistant.\n"
+        "Based on these user answers to a health checkup, suggest 3 relevant mental health articles.\n"
+        "Return the result in this JSON format:\n"
+        "[\n"
+        "  {\n"
+        "    \"title\": \"Article Title\",\n"
+        "    \"summary\": \"Brief summary\",\n"
+        "    \"link\": \"https://example.com/article\"\n"
+        "  }\n"
+        "]\n\n"
+        " Try to get a link from an actual article from the internet.\n"
+        f"User Answers:\n{json.dumps(answers, indent=2)}"
+    )
 
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
         text_response = response.text.strip()
 
-        # Attempt to parse JSON recommendations from Gemini response
-        try:
-            recommendations = json.loads(text_response)
-        except json.JSONDecodeError:
-            logging.warning("Failed to parse Gemini JSON response. Returning raw text as summary.")
+        # Try to extract JSON array from response
+        match = re.search(r"\[(\s*{.*?}\s*)\]", text_response, re.DOTALL)
+        if match:
+            json_content = match.group(0)
+            try:
+                recommendations = json.loads(json_content)
+            except Exception:
+                recommendations = []
+        else:
+            recommendations = []
+
+        if not recommendations:
             recommendations = [{
-                "title": "Unable to parse recommendations",
-                "summary": text_response,
-                "link": "#"
+                "title": "General Mental Health Support",
+                "summary": "Basic tips to improve mental wellbeing.",
+                "link": "https://www.mentalhealth.gov/"
             }]
 
-        return jsonify({
+        return cors_response({
             "response": {
-                "result": "Here are your recommended resources.",
+                "result": "Recommendations generated",
                 "recommendations": recommendations
             }
         })
+    except Exception as e:
+        logging.error(f"Error generating health test recommendations: {e}")
+        return cors_response({
+            "response": {
+                "result": "Error generating recommendations.",
+                "recommendations": []
+            }
+        }, 500)
+
+
+# Endpoint: /get-topic
+@application.route("/get-topic", methods=["OPTIONS", "POST"])
+def get_topic():
+    if request.method == "OPTIONS":
+        return cors_response({}, 204)
+
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "").strip()
+    logging.info(f"get-topic called with text: {text}")
+
+    if not text:
+        return cors_response({"topic": "Untitled Chat"})
+
+    def clean_and_correct_text(input_text):
+        corrections = {
+            'anxeity': 'anxiety', 'aniety': 'anxiety', 'anexiety': 'anxiety',
+            'depresion': 'depression', 'depress': 'depression', 'depresed': 'depressed',
+            'stres': 'stress', 'stresed': 'stressed', 'overwelmed': 'overwhelmed',
+            'panick': 'panic', 'panik': 'panic', 'anxius': 'anxious',
+            'lonley': 'lonely', 'lonly': 'lonely', 'isloated': 'isolated',
+            'slepp': 'sleep', 'slep': 'sleep', 'insomia': 'insomnia',
+            'relatinship': 'relationship', 'relashionship': 'relationship',
+            'therapist': 'therapist', 'counceling': 'counseling', 'councilor': 'counselor',
+            'mindfulnes': 'mindfulness', 'mediation': 'meditation',
+            'addication': 'addiction', 'adiction': 'addiction',
+            'tramatic': 'traumatic', 'truama': 'trauma', 'trama': 'trauma'
+        }
+
+        words = input_text.lower().split()
+        corrected_words = []
+        for word in words:
+            clean_word = word.strip('.,!?;:"()[]{}')
+            corrected_words.append(corrections.get(clean_word, word))
+        return " ".join(corrected_words)
+
+    def capitalize_every_word(title_str):
+        return " ".join(word.capitalize() for word in title_str.split())
+
+    try:
+        cleaned_text = clean_and_correct_text(text)
+
+        prompt = f"""You are an expert mental health chatbot. Generate a precise 2-3 word title that summarizes the core emotional need or topic from this message.
+
+Key Requirements:
+- Use warm, supportive language (not clinical)
+- Focus on help/support rather than problems
+- Be concise but meaningful
+- Avoid medical terminology
+
+Input: "{cleaned_text[:300]}"
+
+Quality Examples:
+"I keep having panic attacks at work" → "Workplace Anxiety"
+"My depression is getting worse lately" → "Depression Care"
+"How can I improve my self confidence" → "Building Confidence"
+"I can't sleep because my mind races" → "Sleep Support"
+"My relationship with my partner is falling apart" → "Relationship Guidance"
+"I feel completely overwhelmed with life" → "Life Balance"
+"I'm grieving the loss of my mother" → "Grief Healing"
+"I think I might have PTSD from trauma" → "Trauma Recovery"
+"I want to learn meditation techniques" → "Mindfulness Training"
+"I'm struggling with alcohol addiction" → "Addiction Recovery"
+
+Generate title:"""
+
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        title = response.text.strip()
+
+        # Clean title of unwanted punctuation and prefixes
+        title = title.strip('"\'.,!?:').strip()
+        prefixes = ['title:', 'topic:', 'generate title:', 'response:', 'answer:']
+        for prefix in prefixes:
+            if title.lower().startswith(prefix):
+                title = title[len(prefix):].strip()
+                break
+
+        # Validate and format title
+        if title and 3 <= len(title) <= 45 and not title.lower().startswith('i '):
+            title = capitalize_every_word(title)
+        else:
+            text_lower = cleaned_text.lower()
+            if any(term in text_lower for term in ['anxiety', 'anxious', 'panic', 'worried', 'nervous']):
+                title = "Anxiety Support"
+            elif any(term in text_lower for term in ['depression', 'depressed', 'sad', 'hopeless', 'down']):
+                title = "Mood Support"
+            elif any(term in text_lower for term in ['stress', 'overwhelmed', 'burnout']):
+                title = "Stress Management"
+            elif any(term in text_lower for term in ['trauma', 'ptsd', 'abuse']):
+                title = "Trauma Recovery"
+            else:
+                title = "Mental Health Support"
+
+        return cors_response({"topic": title})
 
     except Exception as e:
-        logging.exception("Gemini health test error:")
-        return jsonify({"error": str(e)}), 500
-
-# pinecone 
-
-def process_file(file):
-    text = file.read().decode("utf-8")
-    chunks = split_text(text)
-
-    vectors = []
-    for i, chunk in enumerate(chunks):
-        vector_id = f"{file.name}_{i}_{uuid4().hex[:8]}"
-        embedding = get_embedding(chunk)
-        vectors.append({
-            "id": vector_id,
-            "values": embedding,
-            "metadata": {"text": chunk, "source": file.name}
-        })
-
-    index.upsert(vectors=vectors)
-    return len(vectors)
-
-
-def convert_pdf_to_markdown(pdf_path, output_dir):
-    filename = os.path.splitext(os.path.basename(pdf_path))[0]
-    md_path = os.path.join(output_dir, f"{filename}.md")
-
-    with pdfplumber.open(pdf_path) as pdf:
-        full_text = ""
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                full_text += text + "\n\n"
-
-    markdown_text = md(full_text)
-
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write(markdown_text) 
-    process_file(f)
-    print(f"Converted: {pdf_path} → {md_path}")
-
-def batch_convert_pdfs(input_dir, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    for file in os.listdir(input_dir):
-        if file.lower().endswith(".pdf"):
-            pdf_path = os.path.join(input_dir, file)
-            convert_pdf_to_markdown(pdf_path, output_dir)
-
-# === Set your paths here ===
-
-batch_convert_pdfs()
-
-
-input_directory = "/path/to/pdf/folder"
-output_directory = "/path/to/markdown/output"
-
-batch_convert_pdfs(input_directory, output_directory)
-
-# To use the Python SDK, install the plugin:
-# pip install --upgrade pinecone pinecone-plugin-assistant
-
-
-
+        logging.error(f"Error in /get-topic: {e}")
+        return cors_response({"topic": "Untitled Chat"})
 
 
 if __name__ == '__main__':
-    application.run(debug=True)
-
+    application.run(host="0.0.0.0", port=5000, debug=True)
