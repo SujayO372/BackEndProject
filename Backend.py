@@ -93,6 +93,7 @@ load_documents()
 # Prompt template
 prompt_template = """
 You are a helpful mental health assistant chatbot. Use the following context to answer the user's question.
+Try to keep it within 1-2 paragraphs, and be concise and supportive.
 Context:
 {context}
 
@@ -411,6 +412,9 @@ Generate title:"""
     except Exception as e:
         logging.error(f"Error in /get-topic: {e}")
         return cors_response({"topic": "Untitled Chat"})
+
+
+
 
 
 if __name__ == '__main__':
