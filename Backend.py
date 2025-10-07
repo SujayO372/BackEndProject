@@ -247,10 +247,13 @@ def health_test():
         return cors_response({}, 204)
 
     data = request.get_json()
+    print(f"health-test called with data: {data}")
+
     if not data or not isinstance(data.get("answers"), dict):
         return cors_response({"error": "Missing or invalid 'answers' field"}, 400)
 
     answers = data["answers"]
+    print(f"User answers: {answers}")
     combined_text = " ".join(str(v) for v in answers.values())
     if detect_crisis(combined_text):
         return cors_response({
@@ -276,7 +279,7 @@ def health_test():
     )
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
         text_response = response.text.strip()
 
