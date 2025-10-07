@@ -128,7 +128,7 @@ graph_builder = StateGraph(State).add_sequence([retrieve, generate])
 graph_builder.add_edge(START, "retrieve")
 graph = graph_builder.compile()
 
-frontend_url = 'http://www.serenespaceai.com/chatbot'
+frontend_url = 'http://www.serenespaceai.com'
 
 # Safety functions
 def validate_and_sanitize_input(query):
